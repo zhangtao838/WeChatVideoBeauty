@@ -1,0 +1,57 @@
+name: Build WeChatVideoBeauty
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+env:
+  THEOS: /Users/runner/theos
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Show environment
+      run: |
+        echo "macOS version:"
+        sw_vers
+        echo "Xcode version:"
+        xcodebuild -version
+
+    - name: Install dependencies
+      run: |
+        brew install ldid xz
+        echo "ldid installed"
+
+    - name: Setup Theos
+      run: |
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
+        echo "Theos installed"
+
+    - name: Download iPhoneOS 26.5 SDK
+      run: |
+        git clone --depth 1 --filter=blob:none --sparse https://github.com/xybp888/iOS-SDKs.git /tmp/ios-sdks
+        cd /tmp/ios-sdks
+        git sparse-checkout set iPhoneOS26.5.sdk
+        cp -r iPhoneOS26.5.sdk $THEOS/sdks/
+        echo "Available SDKs:"
+        ls -la $THEOS/sdks/
+
+    - name: Build package
+      run: |
+        make clean package FINALPACKAGE=1
+        echo "Build output:"
+        ls -la packages/
+
+    - name: Upload deb artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: WeChatVideoBeauty-deb
+        path: packages/*.deb
+        retention-days: 30

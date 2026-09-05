@@ -1,6 +1,6 @@
 Package: com.wechat.videobeauty
 Name: WeChatVideoBeauty
-Version: 1.0
+Version: 1.1
 Architecture: iphoneos-arm64e
 Description: 微信视频通话镜像+基础美颜（美白磨皮），悬浮按钮调节
 Maintainer: WeChatVideoBeauty

@@ -1,6 +1,6 @@
 # WeChatVideoBeauty
 
-**微信视频通话镜像 + 基础美颜插件**
+**微信视频通话镜像 + 基础美颜插件（v1.1）**
 
 - ✅ 视频通话镜像（前置摄像头画面不翻转）
 - ✅ 基础美颜（美白 + 磨皮，强度可调）
@@ -29,10 +29,10 @@
 ### 点击悬浮按钮弹出设置
 | 选项 | 作用 |
 |---|---|
-| 视频镜像: 开/关 | 前置摄像头画面是否镜像翻转（开=不翻转，文字左右脸方向正常） |
+| 视频镜像: 开/关 | 前置摄像头画面是否镜像翻转 |
 | 视频美颜: 开/关 | 是否启美白磨皮 |
-| 美白强度 ±10% | 调整美白程度（亮度+饱和度） |
-| 磨皮强度 ±10% | 调整磨皮程度（降噪+锐化） |
+| 美白强度 ±10% | 调整美白程度 |
+| 磨皮强度 ±10% | 调整磨皮程度 |
 
 ### 默认设置
 - 镜像：**开启**
@@ -42,18 +42,9 @@
 
 ---
 
-## 三、功能说明
+## 三、v1.1 更新说明
 
-### 视频镜像
-通过 Hook `AVCaptureConnection` 的 `setVideoMirrored:`，强制前置摄像头视频流为镜像模式。这样对方看到的画面跟你本地预览一致，不会左右翻转。
-
-### 基础美颜
-通过 Hook `AVCaptureVideoDataOutput` 的 `setSampleBufferDelegate:`，替换为代理处理视频帧：
-- **美白**：CIColorControls 调整亮度、饱和度、对比度
-- **磨皮**：CINoiseReduction 降噪 + 轻微锐化
-- 处理后的帧再传给微信原 delegate
-
-> 注意：美颜功能依赖微信走标准的 AVCaptureVideoDataOutput 管线。如果微信版本变更导致管线变化，美颜可能不生效，但不会崩溃。镜像功能不受影响。
+- 修复编译错误：`AVCaptureInputPort` 没有 `device` 方法，改为通过 `port.input` 获取 `AVCaptureDeviceInput` 再取 `device`
 
 ---
 
@@ -69,33 +60,21 @@
 idevicesyslog | findstr WeChatVideoBeauty
 ```
 
-### 关键日志
-| 关键词 | 说明 |
-|---|---|
-| `WeChatVideoBeauty v1.0 LOADED` | 插件成功注入微信 |
-| `setSampleBufferDelegate called` | 微信设置了视频输出代理（美颜 Hook 生效） |
-| `setVideoMirrored forced to YES` | 镜像被强制开启 |
-| `processPixelBuffer` | 正在处理视频帧（美颜生效） |
-| `EXCEPTION` | 异常（带调用栈） |
-
 ---
 
 ## 五、常见问题
 
 ### Q: 悬浮按钮不出现？
-A: 看日志有没有 `WeChatVideoBeauty v1.0 LOADED`。如果没有，说明插件没注入成功，检查 deb 是否正确安装、微信是否被杀后台重开。
+A: 看日志有没有 `WeChatVideoBeauty v1.1 LOADED`。如果没有，说明插件没注入成功。
 
 ### Q: 镜像不生效？
-A: 看日志有没有 `setVideoMirrored forced to YES`。如果没有，检查镜像开关是否打开（悬浮按钮里设置）。
+A: 看日志有没有 `setVideoMirrored forced to YES`。如果没有，检查镜像开关是否打开。
 
 ### Q: 美颜不生效？
-A: 看日志有没有 `setSampleBufferDelegate called` 和 `processPixelBuffer`。如果没有，说明微信版本可能用了非标准视频管线，美颜暂不支持该版本。镜像功能仍然可用。
+A: 看日志有没有 `setSampleBufferDelegate called`。如果没有，说明微信版本可能用了非标准视频管线，美颜暂不支持。镜像功能仍然可用。
 
-### Q: 视频通话卡顿/发烫？
-A: 美颜是实时视频帧处理，会增加 CPU 负载。如果卡顿，降低美白/磨皮强度，或者暂时关闭美颜。
-
-### Q: 悬浮按钮挡住画面？
-A: 悬浮按钮可以拖动，拖到不挡画面的位置就行。
+### Q: 视频通话卡顿？
+A: 美颜是实时视频帧处理，会增加 CPU 负载。卡顿的话降低强度或关闭美颜。
 
 ---
 

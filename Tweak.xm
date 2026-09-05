@@ -53,7 +53,7 @@
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL beautyEnabled = [defaults boolForKey:kSettingKeyBeauty];
     if (!beautyEnabled) {
-        return NULL; // 返回 NULL 表示不处理，用原始帧
+        return NULL;
     }
 
     CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
@@ -66,7 +66,7 @@
             return NULL;
         }
 
-        // 美白：CIColorControls 调整亮度/饱和度/对比度
+        // 美白：CIColorControls
         if (whitenLevel > 0.01) {
             CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
             [colorControls setValue:image forKey:kCIInputImageKey];
@@ -76,7 +76,7 @@
             image = [colorControls valueForKey:kCIOutputImageKey];
         }
 
-        // 磨皮：CINoiseReduction 降噪 + 轻微锐化
+        // 磨皮：CINoiseReduction
         if (smoothLevel > 0.01) {
             CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
             [noiseReduction setValue:image forKey:kCIInputImageKey];
@@ -97,7 +97,6 @@
             return NULL;
         }
 
-        // 渲染
         [self.ciContext render:image toCVPixelBuffer:outputBuffer];
         return outputBuffer;
     } @catch (NSException *e) {
@@ -125,14 +124,12 @@
 
         CVPixelBufferRef processedBuffer = [self processPixelBuffer:pixelBuffer];
         if (!processedBuffer) {
-            // 美颜未开启或处理失败，用原始帧
             if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                 [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
             return;
         }
 
-        // 从处理后的 PixelBuffer 创建新的 CMSampleBuffer
         CMSampleBufferRef newSampleBuffer = NULL;
         CMSampleTimingInfo timingInfo;
         CMSampleBufferGetSampleTimingInfo(sampleBuffer, 0, &timingInfo);
@@ -172,7 +169,6 @@
 @interface WVBManager : NSObject
 @property (nonatomic, strong) UIWindow *floatWindow;
 @property (nonatomic, strong) UIButton *floatButton;
-@property (nonatomic, assign) BOOL isDragging;
 + (instancetype)sharedManager;
 - (void)setupFloatButton;
 - (void)showSettings;
@@ -227,13 +223,12 @@
     self.floatButton.titleLabel.font = [UIFont systemFontOfSize:20];
     [self.floatButton addTarget:self action:@selector(handleButtonTap) forControlEvents:UIControlEventTouchUpInside];
 
-    // 拖动手势
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
     [self.floatButton addGestureRecognizer:pan];
 
     [self.floatWindow addSubview:self.floatButton];
 
-    WVBLog(@"float button setup complete at frame: %@", NSStringFromCGRect(self.floatWindow.frame));
+    WVBLog(@"float button setup complete");
 }
 
 - (void)handleButtonTap {
@@ -246,7 +241,6 @@
     CGPoint newCenter = CGPointMake(self.floatWindow.center.x + translation.x,
                                       self.floatWindow.center.y + translation.y);
 
-    // 限制在屏幕范围内
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     CGFloat halfWidth = self.floatWindow.bounds.size.width / 2.0;
     CGFloat halfHeight = self.floatWindow.bounds.size.height / 2.0;
@@ -330,7 +324,6 @@
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
 
-    // iPad 适配
     alert.popoverPresentationController.sourceView = self.floatButton;
     alert.popoverPresentationController.sourceRect = self.floatButton.bounds;
 
@@ -369,14 +362,17 @@
     BOOL mirrorEnabled = [defaults boolForKey:kSettingKeyMirror];
 
     if (mirrorEnabled) {
-        // 判断是否是前置摄像头
         BOOL isFrontCamera = NO;
         @try {
             AVCaptureInputPort *port = [self inputPorts].firstObject;
             if (port) {
-                AVCaptureDevice *device = [port device];
-                if (device && device.position == AVCaptureDevicePositionFront) {
-                    isFrontCamera = YES;
+                // 修复：AVCaptureInputPort 没有 device 方法，通过 input 获取 AVCaptureDeviceInput
+                AVCaptureInput *input = port.input;
+                if ([input isKindOfClass:[AVCaptureDeviceInput class]]) {
+                    AVCaptureDevice *device = [(AVCaptureDeviceInput *)input device];
+                    if (device && device.position == AVCaptureDevicePositionFront) {
+                        isFrontCamera = YES;
+                    }
                 }
             }
         } @catch (NSException *e) {
@@ -433,10 +429,9 @@
 
 static void __attribute__((constructor)) WVBInitialize(void) {
     WVBLog(@"========================================");
-    WVBLog(@"WeChatVideoBeauty v1.0 LOADED");
+    WVBLog(@"WeChatVideoBeauty v1.1 LOADED (fixed AVCaptureInputPort API)");
     WVBLog(@"========================================");
 
-    // 初始化默认设置
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:kSettingKeyMirror]) {
         [defaults setBool:YES forKey:kSettingKeyMirror];
@@ -452,9 +447,5 @@ static void __attribute__((constructor)) WVBInitialize(void) {
     }
     [defaults synchronize];
 
-    WVBLog(@"default settings loaded: mirror=%d, beauty=%d, whiten=%.1f, smooth=%.1f",
-           [defaults boolForKey:kSettingKeyMirror],
-           [defaults boolForKey:kSettingKeyBeauty],
-           [defaults floatForKey:kSettingKeyWhiten],
-           [defaults floatForKey:kSettingKeySmooth]);
+    WVBLog(@"default settings loaded");
 }

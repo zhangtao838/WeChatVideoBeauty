@@ -197,7 +197,8 @@
 
 - (void)setupFloatButton {
     if (self.floatWindow) {
-        WVBLog(@"floatWindow already exists");
+        WVBLog(@"floatWindow already exists, making visible");
+        self.floatWindow.hidden = NO;
         return;
     }
 
@@ -208,17 +209,29 @@
     CGFloat initialX = screenBounds.size.width - buttonSize - 16;
     CGFloat initialY = 120;
 
+    WVBLog(@"screen bounds: %@, button position: (%.0f, %.0f)", NSStringFromCGRect(screenBounds), initialX, initialY);
+
     self.floatWindow = [[UIWindow alloc] initWithFrame:CGRectMake(initialX, initialY, buttonSize, buttonSize)];
-    self.floatWindow.windowLevel = UIWindowLevelStatusBar + 100;
+    // 用 UIWindowLevelAlert 比 StatusBar+100 更可靠
+    self.floatWindow.windowLevel = UIWindowLevelAlert;
     self.floatWindow.backgroundColor = [UIColor clearColor];
+    // 必须设置 rootViewController，否则 window 可能不显示
+    self.floatWindow.rootViewController = [[UIViewController alloc] init];
+    self.floatWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
     self.floatWindow.hidden = NO;
+
+    WVBLog(@"floatWindow created, frame: %@, windowLevel: %.0f", NSStringFromCGRect(self.floatWindow.frame), self.floatWindow.windowLevel);
 
     self.floatButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.floatButton.frame = self.floatWindow.bounds;
-    self.floatButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+    self.floatButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.9];
     self.floatButton.layer.cornerRadius = buttonSize / 2.0;
     self.floatButton.layer.borderWidth = 2.0;
     self.floatButton.layer.borderColor = [UIColor whiteColor].CGColor;
+    self.floatButton.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.floatButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self.floatButton.layer.shadowOpacity = 0.3;
+    self.floatButton.layer.shadowRadius = 4;
     [self.floatButton setTitle:@"✨" forState:UIControlStateNormal];
     self.floatButton.titleLabel.font = [UIFont systemFontOfSize:20];
     [self.floatButton addTarget:self action:@selector(handleButtonTap) forControlEvents:UIControlEventTouchUpInside];
@@ -411,25 +424,11 @@
 
 %end
 
-#pragma mark - Hook UIApplication（启动时设置悬浮按钮）
-
-%hook UIApplication
-
-- (void)applicationDidBecomeActive:(UIApplication *)application {
-    %orig;
-    WVBLog(@"applicationDidBecomeActive, setting up float button");
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[WVBManager sharedManager] setupFloatButton];
-    });
-}
-
-%end
-
 #pragma mark - 构造函数
 
 static void __attribute__((constructor)) WVBInitialize(void) {
     WVBLog(@"========================================");
-    WVBLog(@"WeChatVideoBeauty v1.1 LOADED (fixed AVCaptureInputPort API)");
+    WVBLog(@"WeChatVideoBeauty v1.2 LOADED (fixed float button via notification)");
     WVBLog(@"========================================");
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -448,4 +447,24 @@ static void __attribute__((constructor)) WVBInitialize(void) {
     [defaults synchronize];
 
     WVBLog(@"default settings loaded");
+
+    // 修复：用通知监听替代 Hook UIApplication delegate 方法
+    // applicationDidBecomeActive 是 delegate 协议方法，Hook UIApplication 不生效
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        WVBLog(@"received UIApplicationDidBecomeActiveNotification, setting up float button");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[WVBManager sharedManager] setupFloatButton];
+        });
+    }];
+
+    // 同时直接延迟创建一次，确保按钮出现
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        WVBLog(@"constructor delayed setup, creating float button");
+        [[WVBManager sharedManager] setupFloatButton];
+    });
+
+    WVBLog(@"notification observer registered, constructor setup complete");
 }

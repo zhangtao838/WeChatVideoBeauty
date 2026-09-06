@@ -1,57 +1,45 @@
 name: Build WeChatVideoBeauty
-
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
   workflow_dispatch:
-
-env:
-  THEOS: /Users/runner/theos
-
 jobs:
   build:
     runs-on: macos-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: roothide
+            artifact: WeChatVideoBeauty-roothide
+          - scheme: rootless
+            artifact: WeChatVideoBeauty-rootless
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Show environment
-      run: |
-        echo "macOS version:"
-        sw_vers
-        echo "Xcode version:"
-        xcodebuild -version
-
-    - name: Install dependencies
-      run: |
-        brew install ldid xz
-        echo "ldid installed"
-
-    - name: Setup Theos
-      run: |
-        git clone --recursive https://github.com/theos/theos.git $THEOS
-        echo "THEOS=$THEOS" >> $GITHUB_ENV
-        echo "Theos installed"
-
-    - name: Download iPhoneOS 26.5 SDK
-      run: |
-        git clone --depth 1 --filter=blob:none --sparse https://github.com/xybp888/iOS-SDKs.git /tmp/ios-sdks
-        cd /tmp/ios-sdks
-        git sparse-checkout set iPhoneOS26.5.sdk
-        cp -r iPhoneOS26.5.sdk $THEOS/sdks/
-        echo "Available SDKs:"
-        ls -la $THEOS/sdks/
-
-    - name: Build package
-      run: |
-        make clean package FINALPACKAGE=1
-        echo "Build output:"
-        ls -la packages/
-
-    - name: Upload deb artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: WeChatVideoBeauty-deb
-        path: packages/*.deb
-        retention-days: 30
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install dpkg ldid xz || true
+      - name: Install roothide Theos
+        run: |
+          git clone --recursive https://github.com/roothide/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "$HOME/theos/bin" >> $GITHUB_PATH
+      - name: Fix fakeroot on Apple Silicon
+        run: |
+          sed -i '' 's/$(FAKEROOT) -c/true/' $THEOS/makefiles/stage.mk
+          sed -i '' 's/$(FAKEROOT) -r //' $THEOS/makefiles/package/deb.mk
+      - name: Build (${{ matrix.scheme }})
+        run: |
+          make clean
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}
+      - name: Rename deb
+        run: |
+          cd packages
+          for f in *.deb; do
+            mv "$f" "$(basename "$f" .deb)_${{ matrix.scheme }}.deb"
+          done
+      - name: Upload deb (${{ matrix.scheme }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packages/*.deb

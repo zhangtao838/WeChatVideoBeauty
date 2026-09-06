@@ -192,6 +192,8 @@ static void wvbLog(NSString *format, ...) {
 
 // ============ 设置面板（需在 WVBManager 前声明）=============
 
+@class WVBManager;
+
 @interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, weak) WVBManager *manager;
 @property (nonatomic, strong) UITableView *tableView;

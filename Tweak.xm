@@ -231,20 +231,28 @@ static void wvbLog(NSString *format, ...) {
 
     wvbLog(@"=== setupFloatButton start ===");
 
-    CGFloat buttonSize = 44.0;
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat initialX = screenBounds.size.width - buttonSize - 16;
-    CGFloat initialY = 120;
+    CGFloat buttonSize = 56.0;
+    CGFloat screenWidth = screenBounds.size.width;
+    CGFloat screenHeight = screenBounds.size.height;
+    CGFloat initialX = screenWidth - buttonSize - 20;
+    CGFloat initialY = 160;
 
-    wvbLog(@"screen: %@, button pos: (%.0f, %.0f)",
-           NSStringFromCGRect(screenBounds), initialX, initialY);
+    // 如果屏幕很宽（iPad），让按钮靠右边缘，不要太靠边
+    if (screenWidth > 768) {
+        initialX = screenWidth - buttonSize - 30;
+        initialY = 180;
+    }
+
+    wvbLog(@"screen: %@ (w=%.0f h=%.0f), button pos: (%.0f, %.0f)",
+           NSStringFromCGRect(screenBounds), screenWidth, screenHeight, initialX, initialY);
 
     self.floatWindow = [[UIWindow alloc] initWithFrame:CGRectMake(initialX, initialY, buttonSize, buttonSize)];
-    self.floatWindow.windowLevel = UIWindowLevelStatusBar + 1000;
+    self.floatWindow.windowLevel = UIWindowLevelStatusBar + 2000;
     self.floatWindow.backgroundColor = [UIColor clearColor];
     self.floatWindow.rootViewController = [[UIViewController alloc] init];
     self.floatWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
     self.floatWindow.hidden = NO;
+    self.floatWindow.clipsToBounds = NO;
     [self.floatWindow makeKeyAndVisible];
 
     wvbLog(@"floatWindow created: frame=%@ level=%.0f hidden=%@",
@@ -253,17 +261,19 @@ static void wvbLog(NSString *format, ...) {
            self.floatWindow.hidden ? @"YES" : @"NO");
 
     self.floatButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.floatButton.frame = self.floatWindow.bounds;
-    self.floatButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.9];
+    self.floatButton.frame = CGRectMake(0, 0, buttonSize, buttonSize);
+    self.floatButton.backgroundColor = [UIColor colorWithRed:0.18 green:0.49 blue:0.96 alpha:1.0];
     self.floatButton.layer.cornerRadius = buttonSize / 2.0;
-    self.floatButton.layer.borderWidth = 2.0;
+    self.floatButton.layer.borderWidth = 3.0;
     self.floatButton.layer.borderColor = [UIColor whiteColor].CGColor;
     self.floatButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.floatButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self.floatButton.layer.shadowOpacity = 0.3;
-    self.floatButton.layer.shadowRadius = 4;
-    [self.floatButton setTitle:@"✨" forState:UIControlStateNormal];
-    self.floatButton.titleLabel.font = [UIFont systemFontOfSize:20];
+    self.floatButton.layer.shadowOffset = CGSizeMake(0, 3);
+    self.floatButton.layer.shadowOpacity = 0.4;
+    self.floatButton.layer.shadowRadius = 6;
+    self.floatButton.clipsToBounds = NO;
+    [self.floatButton setTitle:@"美颜" forState:UIControlStateNormal];
+    self.floatButton.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    self.floatButton.titleLabel.textColor = [UIColor whiteColor];
     [self.floatButton addTarget:self action:@selector(handleButtonTap) forControlEvents:UIControlEventTouchUpInside];
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
@@ -307,27 +317,39 @@ static void wvbLog(NSString *format, ...) {
     CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
     CGFloat smoothLevel = [defaults floatForKey:kSettingKeySmooth];
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"微信视频美颜助手"
-                                                                     message:[NSString stringWithFormat:@"镜像: %@ | 美颜: %@\n美白: %.0f%% | 磨皮: %.0f%%",
-                                                                              mirrorEnabled ? @"开" : @"关",
-                                                                              beautyEnabled ? @"开" : @"关",
-                                                                              whitenLevel * 100,
-                                                                              smoothLevel * 100]
-                                                              preferredStyle:UIAlertControllerStyleActionSheet];
+    // iPad 上用 alert 样式，避免 action sheet 变成 popover 只显示一小块
+    UIAlertControllerStyle style = UIAlertControllerStyleAlert;
+    if (UIUserInterfaceIdiomPad != UI_USER_INTERFACE_IDIOM()) {
+        style = UIAlertControllerStyleActionSheet;
+    }
 
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"视频镜像: %@", mirrorEnabled ? @"✅ 开" : @"❌ 关"]
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✨ 微信视频美颜助手"
+                                                                   message:[NSString stringWithFormat:@"镜像: %@  |  美颜: %@\n美白: %.0f%%  |  磨皮: %.0f%%",
+                                                                            mirrorEnabled ? @"✅开" : @"❌关",
+                                                                            beautyEnabled ? @"✅开" : @"❌关",
+                                                                            whitenLevel * 100,
+                                                                            smoothLevel * 100]
+                                                            preferredStyle:style];
+
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"📷 视频镜像: %@", mirrorEnabled ? @"开" : @"关"]
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         [self toggleMirror];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showSettings];
+        });
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"视频美颜: %@", beautyEnabled ? @"✅ 开" : @"❌ 关"]
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"💄 视频美颜: %@", beautyEnabled ? @"开" : @"关"]
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         [self toggleBeauty];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showSettings];
+        });
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"美白强度 +10%"
+    [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ 美白 +10%"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         CGFloat level = [defaults floatForKey:kSettingKeyWhiten];
@@ -335,9 +357,10 @@ static void wvbLog(NSString *format, ...) {
         [defaults setFloat:level forKey:kSettingKeyWhiten];
         [defaults synchronize];
         wvbLog(@"whiten +10%% -> %.1f", level);
+        [self showSettings];
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"美白强度 -10%"
+    [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ 美白 -10%"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         CGFloat level = [defaults floatForKey:kSettingKeyWhiten];
@@ -345,9 +368,10 @@ static void wvbLog(NSString *format, ...) {
         [defaults setFloat:level forKey:kSettingKeyWhiten];
         [defaults synchronize];
         wvbLog(@"whiten -10%% -> %.1f", level);
+        [self showSettings];
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"磨皮强度 +10%"
+    [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ 磨皮 +10%"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         CGFloat level = [defaults floatForKey:kSettingKeySmooth];
@@ -355,9 +379,10 @@ static void wvbLog(NSString *format, ...) {
         [defaults setFloat:level forKey:kSettingKeySmooth];
         [defaults synchronize];
         wvbLog(@"smooth +10%% -> %.1f", level);
+        [self showSettings];
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"磨皮强度 -10%"
+    [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ 磨皮 -10%"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         CGFloat level = [defaults floatForKey:kSettingKeySmooth];
@@ -365,14 +390,17 @@ static void wvbLog(NSString *format, ...) {
         [defaults setFloat:level forKey:kSettingKeySmooth];
         [defaults synchronize];
         wvbLog(@"smooth -10%% -> %.1f", level);
+        [self showSettings];
     }]];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"关闭"
+    [alert addAction:[UIAlertAction actionWithTitle:@"❌ 关闭"
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
 
-    alert.popoverPresentationController.sourceView = self.floatButton;
-    alert.popoverPresentationController.sourceRect = self.floatButton.bounds;
+    if (style == UIAlertControllerStyleActionSheet) {
+        alert.popoverPresentationController.sourceView = self.floatButton;
+        alert.popoverPresentationController.sourceRect = self.floatButton.bounds;
+    }
 
     UIViewController *rootVC = self.floatWindow.rootViewController;
     if (!rootVC) {

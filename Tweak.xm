@@ -4,18 +4,38 @@
 #import <CoreMedia/CoreMedia.h>
 #import <objc/runtime.h>
 
-#pragma mark - 调试日志宏
+// ============ 文件日志（写到 /tmp/wvb.log，不用 syslog）============
 
-#define WVBLog(fmt, ...) NSLog(@"[WeChatVideoBeauty] " fmt, ##__VA_ARGS__)
+static void wvbLog(NSString *line) {
+    static BOOL truncated = NO;
+    if (!truncated) {
+        [[NSFileManager defaultManager] removeItemAtPath:@"/tmp/wvb.log" error:NULL];
+        truncated = YES;
+    }
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    [fmt setDateFormat:@"HH:mm:ss.SSS"];
+    NSString *entry = [NSString stringWithFormat:@"[%@] %@\n",
+                       [fmt stringFromDate:[NSDate date]], line];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/wvb.log"];
+    if (!fh) {
+        [[NSFileManager defaultManager] createFileAtPath:@"/tmp/wvb.log"
+                                                contents:nil
+                                              attributes:nil];
+        fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/wvb.log"];
+    }
+    [fh seekToEndOfFile];
+    [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+}
 
-#pragma mark - 常量
+// ============ 常量 ============
 
 #define kSettingKeyMirror @"wvb_mirror_enabled"
 #define kSettingKeyBeauty @"wvb_beauty_enabled"
 #define kSettingKeyWhiten @"wvb_whiten_level"
 #define kSettingKeySmooth @"wvb_smooth_level"
 
-#pragma mark - 视频帧处理工具
+// ============ 视频帧处理工具 ============
 
 @interface WVBVideoFrameHandler : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, weak) id<AVCaptureVideoDataOutputSampleBufferDelegate> originalDelegate;
@@ -39,34 +59,36 @@
     self = [super init];
     if (self) {
         self.ciContext = [CIContext contextWithOptions:nil];
-        WVBLog(@"WVBVideoFrameHandler initialized");
+        wvbLog(@"WVBVideoFrameHandler init, ciContext=%@", self.ciContext);
     }
     return self;
 }
 
 - (CVPixelBufferRef)processPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     if (!pixelBuffer) {
-        WVBLog(@"processPixelBuffer: pixelBuffer is nil");
+        wvbLog(@"❌ processPixelBuffer: pixelBuffer is nil");
         return NULL;
     }
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL beautyEnabled = [defaults boolForKey:kSettingKeyBeauty];
     if (!beautyEnabled) {
+        wvbLog(@"⚠️  beauty disabled, skip");
         return NULL;
     }
 
     CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
     CGFloat smoothLevel = [defaults floatForKey:kSettingKeySmooth];
+    wvbLog(@"processPixelBuffer: whiten=%.2f smooth=%.2f", whitenLevel, smoothLevel);
 
     @try {
         CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
         if (!image) {
-            WVBLog(@"failed to create CIImage from pixelBuffer");
+            wvbLog(@"❌ failed to create CIImage");
             return NULL;
         }
 
-        // 美白：CIColorControls
+        // 美白
         if (whitenLevel > 0.01) {
             CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
             [colorControls setValue:image forKey:kCIInputImageKey];
@@ -76,7 +98,7 @@
             image = [colorControls valueForKey:kCIOutputImageKey];
         }
 
-        // 磨皮：CINoiseReduction
+        // 磨皮
         if (smoothLevel > 0.01) {
             CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
             [noiseReduction setValue:image forKey:kCIInputImageKey];
@@ -85,7 +107,6 @@
             image = [noiseReduction valueForKey:kCIOutputImageKey];
         }
 
-        // 创建输出 PixelBuffer
         size_t width = CVPixelBufferGetWidth(pixelBuffer);
         size_t height = CVPixelBufferGetHeight(pixelBuffer);
         OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
@@ -93,14 +114,15 @@
         CVPixelBufferRef outputBuffer = NULL;
         CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
         if (ret != kCVReturnSuccess || !outputBuffer) {
-            WVBLog(@"failed to create output pixelBuffer, ret=%d", (int)ret);
+            wvbLog(@"❌ CVPixelBufferCreate failed, ret=%d", (int)ret);
             return NULL;
         }
 
         [self.ciContext render:image toCVPixelBuffer:outputBuffer];
+        wvbLog(@"✅ rendered to outputBuffer %p", outputBuffer);
         return outputBuffer;
     } @catch (NSException *e) {
-        WVBLog(@"EXCEPTION in processPixelBuffer: %@", e);
+        wvbLog(@"❌ EXCEPTION in processPixelBuffer: %@", e);
         return NULL;
     }
 }
@@ -147,7 +169,7 @@
             }
             CFRelease(newSampleBuffer);
         } else {
-            WVBLog(@"failed to create new sampleBuffer, using original");
+            wvbLog(@"❌ CMSampleBufferCreateForImageBuffer failed");
             if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                 [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
@@ -155,7 +177,7 @@
 
         CVPixelBufferRelease(processedBuffer);
     } @catch (NSException *e) {
-        WVBLog(@"EXCEPTION in captureOutput: %@", e);
+        wvbLog(@"❌ EXCEPTION in captureOutput: %@", e);
         if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
             [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
         }
@@ -164,7 +186,7 @@
 
 @end
 
-#pragma mark - 管理器单例
+// ============ 悬浮按钮管理器 ============
 
 @interface WVBManager : NSObject
 @property (nonatomic, strong) UIWindow *floatWindow;
@@ -190,37 +212,41 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
-        WVBLog(@"WVBManager initialized");
+        wvbLog(@"WVBManager init");
     }
     return self;
 }
 
 - (void)setupFloatButton {
     if (self.floatWindow) {
-        WVBLog(@"floatWindow already exists, making visible");
+        wvbLog(@"floatWindow already exists, hidden=%@ -> show it",
+               self.floatWindow.hidden ? @"YES" : @"NO");
         self.floatWindow.hidden = NO;
         return;
     }
 
-    WVBLog(@"setting up float button");
+    wvbLog(@"=== setupFloatButton start ===");
 
     CGFloat buttonSize = 44.0;
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     CGFloat initialX = screenBounds.size.width - buttonSize - 16;
     CGFloat initialY = 120;
 
-    WVBLog(@"screen bounds: %@, button position: (%.0f, %.0f)", NSStringFromCGRect(screenBounds), initialX, initialY);
+    wvbLog(@"screen: %@, button pos: (%.0f, %.0f)",
+           NSStringFromCGRect(screenBounds), initialX, initialY);
 
     self.floatWindow = [[UIWindow alloc] initWithFrame:CGRectMake(initialX, initialY, buttonSize, buttonSize)];
-    // 用 UIWindowLevelAlert 比 StatusBar+100 更可靠
-    self.floatWindow.windowLevel = UIWindowLevelAlert;
+    self.floatWindow.windowLevel = UIWindowLevelStatusBar + 1000;
     self.floatWindow.backgroundColor = [UIColor clearColor];
-    // 必须设置 rootViewController，否则 window 可能不显示
     self.floatWindow.rootViewController = [[UIViewController alloc] init];
     self.floatWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
     self.floatWindow.hidden = NO;
+    [self.floatWindow makeKeyAndVisible];
 
-    WVBLog(@"floatWindow created, frame: %@, windowLevel: %.0f", NSStringFromCGRect(self.floatWindow.frame), self.floatWindow.windowLevel);
+    wvbLog(@"floatWindow created: frame=%@ level=%.0f hidden=%@",
+           NSStringFromCGRect(self.floatWindow.frame),
+           self.floatWindow.windowLevel,
+           self.floatWindow.hidden ? @"YES" : @"NO");
 
     self.floatButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.floatButton.frame = self.floatWindow.bounds;
@@ -241,11 +267,15 @@
 
     [self.floatWindow addSubview:self.floatButton];
 
-    WVBLog(@"float button setup complete");
+    wvbLog(@"floatButton added: frame=%@ title='%@' subviews=%lu",
+           NSStringFromCGRect(self.floatButton.frame),
+           [self.floatButton titleForState:UIControlStateNormal],
+           (unsigned long)self.floatWindow.subviews.count);
+    wvbLog(@"=== setupFloatButton done ===");
 }
 
 - (void)handleButtonTap {
-    WVBLog(@"float button tapped");
+    wvbLog(@"float button tapped");
     [self showSettings];
 }
 
@@ -265,7 +295,7 @@
 }
 
 - (void)showSettings {
-    WVBLog(@"showing settings");
+    wvbLog(@"showSettings");
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL mirrorEnabled = [defaults boolForKey:kSettingKeyMirror];
@@ -300,7 +330,7 @@
         level = MIN(1.0, level + 0.1);
         [defaults setFloat:level forKey:kSettingKeyWhiten];
         [defaults synchronize];
-        WVBLog(@"whiten level set to: %.1f", level);
+        wvbLog(@"whiten +10%% -> %.1f", level);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"美白强度 -10%"
@@ -310,7 +340,7 @@
         level = MAX(0.0, level - 0.1);
         [defaults setFloat:level forKey:kSettingKeyWhiten];
         [defaults synchronize];
-        WVBLog(@"whiten level set to: %.1f", level);
+        wvbLog(@"whiten -10%% -> %.1f", level);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"磨皮强度 +10%"
@@ -320,7 +350,7 @@
         level = MIN(1.0, level + 0.1);
         [defaults setFloat:level forKey:kSettingKeySmooth];
         [defaults synchronize];
-        WVBLog(@"smooth level set to: %.1f", level);
+        wvbLog(@"smooth +10%% -> %.1f", level);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"磨皮强度 -10%"
@@ -330,7 +360,7 @@
         level = MAX(0.0, level - 0.1);
         [defaults setFloat:level forKey:kSettingKeySmooth];
         [defaults synchronize];
-        WVBLog(@"smooth level set to: %.1f", level);
+        wvbLog(@"smooth -10%% -> %.1f", level);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"关闭"
@@ -353,7 +383,7 @@
     BOOL current = [defaults boolForKey:kSettingKeyMirror];
     [defaults setBool:!current forKey:kSettingKeyMirror];
     [defaults synchronize];
-    WVBLog(@"mirror toggled: %@ -> %@", current ? @"ON" : @"OFF", !current ? @"ON" : @"OFF");
+    wvbLog(@"mirror: %@ -> %@", current ? @"ON" : @"OFF", !current ? @"ON" : @"OFF");
 }
 
 - (void)toggleBeauty {
@@ -361,12 +391,12 @@
     BOOL current = [defaults boolForKey:kSettingKeyBeauty];
     [defaults setBool:!current forKey:kSettingKeyBeauty];
     [defaults synchronize];
-    WVBLog(@"beauty toggled: %@ -> %@", current ? @"ON" : @"OFF", !current ? @"ON" : @"OFF");
+    wvbLog(@"beauty: %@ -> %@", current ? @"ON" : @"OFF", !current ? @"ON" : @"OFF");
 }
 
 @end
 
-#pragma mark - Hook AVCaptureConnection（视频镜像）
+// ============ Hook AVCaptureConnection（视频镜像）=============
 
 %hook AVCaptureConnection
 
@@ -374,12 +404,15 @@
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL mirrorEnabled = [defaults boolForKey:kSettingKeyMirror];
 
+    wvbLog(@"setVideoMirrored: mirrorEnabled=%@ currentValue=%@",
+           mirrorEnabled ? @"YES" : @"NO",
+           videoMirrored ? @"YES" : @"NO");
+
     if (mirrorEnabled) {
         BOOL isFrontCamera = NO;
         @try {
             AVCaptureInputPort *port = [self inputPorts].firstObject;
             if (port) {
-                // 修复：AVCaptureInputPort 没有 device 方法，通过 input 获取 AVCaptureDeviceInput
                 AVCaptureInput *input = port.input;
                 if ([input isKindOfClass:[AVCaptureDeviceInput class]]) {
                     AVCaptureDevice *device = [(AVCaptureDeviceInput *)input device];
@@ -389,13 +422,15 @@
                 }
             }
         } @catch (NSException *e) {
-            WVBLog(@"EXCEPTION checking front camera: %@", e);
+            wvbLog(@"EXCEPTION checking front camera: %@", e);
         }
 
         if (isFrontCamera) {
-            WVBLog(@"setVideoMirrored forced to YES (front camera, mirror enabled)");
+            wvbLog(@"✅ force mirror YES (front camera)");
             %orig(YES);
             return;
+        } else {
+            wvbLog(@"⚠️  not front camera, pass original");
         }
     }
 
@@ -404,33 +439,40 @@
 
 %end
 
-#pragma mark - Hook AVCaptureVideoDataOutput（美颜帧处理）
+// ============ Hook AVCaptureVideoDataOutput（美颜帧处理）=============
 
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue {
-    WVBLog(@"setSampleBufferDelegate called, delegate class: %@", NSStringFromClass([delegate class]));
+    wvbLog(@"========================================");
+    wvbLog(@"setSampleBufferDelegate called");
+    wvbLog(@"   delegate class: %@", NSStringFromClass([delegate class]));
+    wvbLog(@"   respondsToSelector: %@",
+           [delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)] ? @"YES" : @"NO");
 
     if (delegate) {
         WVBVideoFrameHandler *handler = [WVBVideoFrameHandler sharedHandler];
         handler.originalDelegate = delegate;
-        WVBLog(@"original delegate saved, using WVBVideoFrameHandler as proxy");
+        wvbLog(@"✅ hooked! handler=%@ originalDelegate=%@", handler, delegate);
         %orig(handler, queue);
     } else {
-        WVBLog(@"delegate is nil, passing through");
+        wvbLog(@"⚠️  delegate nil, pass through");
         %orig(delegate, queue);
     }
+    wvbLog(@"========================================");
 }
 
 %end
 
-#pragma mark - 构造函数
+// ============ 构造函数 ============
 
-static void __attribute__((constructor)) WVBInitialize(void) {
-    WVBLog(@"========================================");
-    WVBLog(@"WeChatVideoBeauty v1.2 LOADED (fixed float button via notification)");
-    WVBLog(@"========================================");
+%ctor {
+    wvbLog(@"========================================");
+    wvbLog(@"WeChatVideoBeauty v1.2 LOADED");
+    wvbLog(@"   log file: /tmp/wvb.log");
+    wvbLog(@"========================================");
 
+    // 默认设置
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (![defaults objectForKey:kSettingKeyMirror]) {
         [defaults setBool:YES forKey:kSettingKeyMirror];
@@ -446,25 +488,24 @@ static void __attribute__((constructor)) WVBInitialize(void) {
     }
     [defaults synchronize];
 
-    WVBLog(@"default settings loaded");
+    wvbLog(@"default settings: mirror=YES beauty=NO whiten=0.5 smooth=0.5");
 
-    // 修复：用通知监听替代 Hook UIApplication delegate 方法
-    // applicationDidBecomeActive 是 delegate 协议方法，Hook UIApplication 不生效
+    // 微信进入前台时创建悬浮按钮
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
-        WVBLog(@"received UIApplicationDidBecomeActiveNotification, setting up float button");
+        wvbLog(@"UIApplicationDidBecomeActiveNotification");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [[WVBManager sharedManager] setupFloatButton];
         });
     }];
 
-    // 同时直接延迟创建一次，确保按钮出现
+    // 兜底：延迟 2 秒直接创建一次
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        WVBLog(@"constructor delayed setup, creating float button");
+        wvbLog(@"delayed setup (2s fallback)");
         [[WVBManager sharedManager] setupFloatButton];
     });
 
-    WVBLog(@"notification observer registered, constructor setup complete");
+    wvbLog(@"constructor done, check /tmp/wvb.log for floatWindow logs");
 }

@@ -1,0 +1,4 @@
+#!/bin/sh
+# 卸载后清理日志
+rm -f /tmp/wvb.log 2>/dev/null
+exit 0

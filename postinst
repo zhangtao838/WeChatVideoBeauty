@@ -1,0 +1,4 @@
+#!/bin/sh
+# 安装后清理：杀掉微信让插件生效
+killall WeChat 2>/dev/null
+exit 0

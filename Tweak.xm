@@ -70,78 +70,102 @@ static void wvbLog(NSString *format, ...) {
 
 - (CVPixelBufferRef)processPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     if (!pixelBuffer) {
-        wvbLog(@"❌ processPixelBuffer: pixelBuffer is nil");
         return NULL;
     }
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL beautyEnabled = [defaults boolForKey:kSettingKeyBeauty];
     if (!beautyEnabled) {
-        wvbLog(@"⚠️  beauty disabled, skip");
         return NULL;
     }
 
     CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
     CGFloat smoothLevel = [defaults floatForKey:kSettingKeySmooth];
-    wvbLog(@"processPixelBuffer: whiten=%.2f smooth=%.2f", whitenLevel, smoothLevel);
 
-    @try {
+    if (whitenLevel < 0.01 && smoothLevel < 0.01) {
+        return NULL;
+    }
+
+    @autoreleasepool {
         CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
         if (!image) {
-            wvbLog(@"❌ failed to create CIImage");
             return NULL;
         }
 
         // 美白
         if (whitenLevel > 0.01) {
             CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
-            [colorControls setValue:image forKey:kCIInputImageKey];
-            [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
-            [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
-            [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
-            image = [colorControls valueForKey:kCIOutputImageKey];
+            if (colorControls) {
+                [colorControls setValue:image forKey:kCIInputImageKey];
+                [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
+                [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
+                [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
+                image = [colorControls valueForKey:kCIOutputImageKey];
+                if (!image) {
+                    return NULL;
+                }
+            }
         }
 
         // 磨皮
         if (smoothLevel > 0.01) {
             CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
-            [noiseReduction setValue:image forKey:kCIInputImageKey];
-            [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
-            [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
-            image = [noiseReduction valueForKey:kCIOutputImageKey];
+            if (noiseReduction) {
+                [noiseReduction setValue:image forKey:kCIInputImageKey];
+                [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
+                [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
+                image = [noiseReduction valueForKey:kCIOutputImageKey];
+                if (!image) {
+                    return NULL;
+                }
+            }
         }
 
         size_t width = CVPixelBufferGetWidth(pixelBuffer);
         size_t height = CVPixelBufferGetHeight(pixelBuffer);
         OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
 
-        CVPixelBufferRef outputBuffer = NULL;
-        CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
-        if (ret != kCVReturnSuccess || !outputBuffer) {
-            wvbLog(@"❌ CVPixelBufferCreate failed, ret=%d", (int)ret);
+        if (width == 0 || height == 0) {
             return NULL;
         }
 
-        [self.ciContext render:image toCVPixelBuffer:outputBuffer];
-        wvbLog(@"✅ rendered to outputBuffer %p", outputBuffer);
+        CVPixelBufferRef outputBuffer = NULL;
+        CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
+        if (ret != kCVReturnSuccess || !outputBuffer) {
+            return NULL;
+        }
+
+        @try {
+            [self.ciContext render:image toCVPixelBuffer:outputBuffer];
+        } @catch (NSException *e) {
+            CVPixelBufferRelease(outputBuffer);
+            return NULL;
+        }
+
         return outputBuffer;
-    } @catch (NSException *e) {
-        wvbLog(@"❌ EXCEPTION in processPixelBuffer: %@", e);
-        return NULL;
     }
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    // 安全检查
     if (!sampleBuffer || !self.originalDelegate) {
-        if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+        return;
+    }
+
+    // 如果美颜没开，直接透传原始帧
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults boolForKey:kSettingKeyBeauty]) {
+        if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
             [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
         }
         return;
     }
 
-    @try {
+    // 美颜开启时才处理
+    @autoreleasepool {
         CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!pixelBuffer) {
+            // 无法获取 buffer，透传原始帧
             if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                 [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
@@ -150,6 +174,18 @@ static void wvbLog(NSString *format, ...) {
 
         CVPixelBufferRef processedBuffer = [self processPixelBuffer:pixelBuffer];
         if (!processedBuffer) {
+            // 处理失败，透传原始帧
+            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            }
+            return;
+        }
+
+        // 创建新的 sample buffer
+        CMVideoFormatDescriptionRef formatDesc = NULL;
+        OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, processedBuffer, &formatDesc);
+        if (status != noErr || !formatDesc) {
+            CVPixelBufferRelease(processedBuffer);
             if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                 [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
@@ -158,33 +194,34 @@ static void wvbLog(NSString *format, ...) {
 
         CMSampleBufferRef newSampleBuffer = NULL;
         CMSampleTimingInfo timingInfo;
-        CMSampleBufferGetSampleTimingInfo(sampleBuffer, 0, &timingInfo);
+        memset(&timingInfo, 0, sizeof(timingInfo));
 
-        CMVideoFormatDescriptionRef formatDesc = NULL;
-        CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, processedBuffer, &formatDesc);
+        status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault,
+                                                     processedBuffer,
+                                                     true,
+                                                     NULL,
+                                                     NULL,
+                                                     formatDesc,
+                                                     &timingInfo,
+                                                     &newSampleBuffer);
 
-        CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, processedBuffer, true, NULL, NULL, formatDesc, &timingInfo, &newSampleBuffer);
+        CFRelease(formatDesc);
+        CVPixelBufferRelease(processedBuffer);
 
-        if (formatDesc) CFRelease(formatDesc);
-
-        if (newSampleBuffer) {
-            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
-            }
-            CFRelease(newSampleBuffer);
-        } else {
-            wvbLog(@"❌ CMSampleBufferCreateForImageBuffer failed");
+        if (status != noErr || !newSampleBuffer) {
             if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
                 [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
+            return;
         }
 
-        CVPixelBufferRelease(processedBuffer);
-    } @catch (NSException *e) {
-        wvbLog(@"❌ EXCEPTION in captureOutput: %@", e);
-        if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-            [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
-        }
+        // 传给原始 delegate（在主线程）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [self.originalDelegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
+            }
+            CFRelease(newSampleBuffer);
+        });
     }
 }
 
@@ -197,6 +234,7 @@ static void wvbLog(NSString *format, ...) {
 @interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, weak) WVBManager *manager;
 @property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) UIView *panelView;
 @end
 
 // ============ 悬浮按钮管理器 ============
@@ -321,15 +359,11 @@ static void wvbLog(NSString *format, ...) {
 
     CGRect screenBounds = [UIScreen mainScreen].bounds;
 
-    // 全屏透明背景窗口
+    // 全屏背景窗口
     self.settingsWindow = [[UIWindow alloc] initWithFrame:screenBounds];
     self.settingsWindow.windowLevel = UIWindowLevelStatusBar + 3000;
     self.settingsWindow.backgroundColor = [UIColor clearColor];
     self.settingsWindow.rootViewController = [[UIViewController alloc] init];
-
-    // 点击背景关闭
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideSettings)];
-    [self.settingsWindow.rootViewController.view addGestureRecognizer:tap];
 
     // 设置面板
     WVBSettingsVC *vc = [[WVBSettingsVC alloc] init];
@@ -340,8 +374,31 @@ static void wvbLog(NSString *format, ...) {
     [self.settingsWindow.rootViewController.view addSubview:vc.view];
     [vc didMoveToParentViewController:self.settingsWindow.rootViewController];
 
+    // 点击面板外部关闭（在 vc.view 上加 tap，通过坐标判断是否点在面板上）
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSettingsBackgroundTap:)];
+    tap.cancelsTouchesInView = NO;
+    [vc.view addGestureRecognizer:tap];
+
     [self.settingsWindow makeKeyAndVisible];
     wvbLog(@"settingsWindow shown");
+}
+
+- (void)handleSettingsBackgroundTap:(UITapGestureRecognizer *)tap {
+    // 检查 tap 位置是否在面板内
+    WVBSettingsVC *vc = (WVBSettingsVC *)self.settingsWindow.rootViewController.childViewControllers.firstObject;
+    if (!vc || !vc.panelView) {
+        [self hideSettings];
+        return;
+    }
+
+    CGPoint location = [tap locationInView:vc.view];
+    if (CGRectContainsPoint(vc.panelView.frame, location)) {
+        // 点在面板内部，不关闭
+        return;
+    }
+
+    // 点在面板外部，关闭
+    [self hideSettings];
 }
 
 - (void)hideSettings {
@@ -397,6 +454,7 @@ static void wvbLog(NSString *format, ...) {
     panel.layer.shadowOffset = CGSizeMake(0, 4);
     panel.layer.shadowOpacity = 0.3;
     panel.layer.shadowRadius = 12;
+    self.panelView = panel;
     [self.view addSubview:panel];
 
     // 标题
@@ -638,22 +696,17 @@ static void wvbLog(NSString *format, ...) {
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue {
-    wvbLog(@"========================================");
-    wvbLog(@"setSampleBufferDelegate called");
-    wvbLog(@"   delegate class: %@", NSStringFromClass([delegate class]));
-    wvbLog(@"   respondsToSelector: %@",
-           [delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)] ? @"YES" : @"NO");
+    wvbLog(@"setSampleBufferDelegate: class=%@ queue=%p", NSStringFromClass([delegate class]), queue);
 
-    if (delegate) {
+    if (delegate && [delegate conformsToProtocol:@protocol(AVCaptureVideoDataOutputSampleBufferDelegate)]) {
         WVBVideoFrameHandler *handler = [WVBVideoFrameHandler sharedHandler];
         handler.originalDelegate = delegate;
-        wvbLog(@"✅ hooked! handler=%@ originalDelegate=%@", handler, delegate);
+        wvbLog(@"✅ hooked delegate");
         %orig(handler, queue);
     } else {
-        wvbLog(@"⚠️  delegate nil, pass through");
+        wvbLog(@"⚠️  delegate nil or not conforming, pass through");
         %orig(delegate, queue);
     }
-    wvbLog(@"========================================");
 }
 
 %end

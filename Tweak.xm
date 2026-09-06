@@ -192,6 +192,8 @@ static void wvbLog(NSString *format, ...) {
 
 // ============ 悬浮按钮管理器 ============
 
+@class WVBSettingsVC;
+
 @interface WVBManager : NSObject
 @property (nonatomic, strong) UIWindow *floatWindow;
 @property (nonatomic, strong) UIButton *floatButton;

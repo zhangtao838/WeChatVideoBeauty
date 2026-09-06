@@ -1,5 +1,7 @@
 export ARCHS = arm64 arm64e
 export TARGET = iphone:clang:latest:15.0
+# RootHide (Dopamine-roothide / Relaxin 等)
+export THEOS_PACKAGE_SCHEME ?= roothide
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WeChatVideoBeauty

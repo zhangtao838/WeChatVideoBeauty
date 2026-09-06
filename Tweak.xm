@@ -6,7 +6,7 @@
 
 // ============ 文件日志（写到 /tmp/wvb.log，不用 syslog）============
 
-static void wvbLog(NSString *line) {
+static void wvbLog(NSString *format, ...) {
     static BOOL truncated = NO;
     if (!truncated) {
         [[NSFileManager defaultManager] removeItemAtPath:@"/tmp/wvb.log" error:NULL];
@@ -14,8 +14,12 @@ static void wvbLog(NSString *line) {
     }
     NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
     [fmt setDateFormat:@"HH:mm:ss.SSS"];
+    va_list args;
+    va_start(args, format);
+    NSString *body = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
     NSString *entry = [NSString stringWithFormat:@"[%@] %@\n",
-                       [fmt stringFromDate:[NSDate date]], line];
+                       [fmt stringFromDate:[NSDate date]], body];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/tmp/wvb.log"];
     if (!fh) {
         [[NSFileManager defaultManager] createFileAtPath:@"/tmp/wvb.log"

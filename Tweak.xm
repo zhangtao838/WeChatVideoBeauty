@@ -195,9 +195,11 @@ static void wvbLog(NSString *format, ...) {
 @interface WVBManager : NSObject
 @property (nonatomic, strong) UIWindow *floatWindow;
 @property (nonatomic, strong) UIButton *floatButton;
+@property (nonatomic, strong) UIWindow *settingsWindow;
 + (instancetype)sharedManager;
 - (void)setupFloatButton;
 - (void)showSettings;
+- (void)hideSettings;
 - (void)toggleMirror;
 - (void)toggleBeauty;
 @end
@@ -303,94 +305,39 @@ static void wvbLog(NSString *format, ...) {
 - (void)showSettings {
     wvbLog(@"showSettings");
 
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL mirrorEnabled = [defaults boolForKey:kSettingKeyMirror];
-    BOOL beautyEnabled = [defaults boolForKey:kSettingKeyBeauty];
-    CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
-    CGFloat smoothLevel = [defaults floatForKey:kSettingKeySmooth];
-
-    // 全部用 alert 样式，避免 action sheet 在 iPad 上变成小 popover
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✨ 微信视频美颜助手"
-                                                                   message:[NSString stringWithFormat:@"镜像: %@  |  美颜: %@\n美白: %.0f%%  |  磨皮: %.0f%%",
-                                                                            mirrorEnabled ? @"✅开" : @"❌关",
-                                                                            beautyEnabled ? @"✅开" : @"❌关",
-                                                                            whitenLevel * 100,
-                                                                            smoothLevel * 100]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"📷 视频镜像: %@", mirrorEnabled ? @"开" : @"关"]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        [self toggleMirror];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showSettings];
-        });
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"💄 视频美颜: %@", beautyEnabled ? @"开" : @"关"]
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        [self toggleBeauty];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showSettings];
-        });
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ 美白 +10%"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CGFloat level = [defaults floatForKey:kSettingKeyWhiten];
-        level = MIN(1.0, level + 0.1);
-        [defaults setFloat:level forKey:kSettingKeyWhiten];
-        [defaults synchronize];
-        wvbLog(@"whiten +10%% -> %.1f", level);
-        [self showSettings];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ 美白 -10%"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CGFloat level = [defaults floatForKey:kSettingKeyWhiten];
-        level = MAX(0.0, level - 0.1);
-        [defaults setFloat:level forKey:kSettingKeyWhiten];
-        [defaults synchronize];
-        wvbLog(@"whiten -10%% -> %.1f", level);
-        [self showSettings];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"⬆️ 磨皮 +10%"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CGFloat level = [defaults floatForKey:kSettingKeySmooth];
-        level = MIN(1.0, level + 0.1);
-        [defaults setFloat:level forKey:kSettingKeySmooth];
-        [defaults synchronize];
-        wvbLog(@"smooth +10%% -> %.1f", level);
-        [self showSettings];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"⬇️ 磨皮 -10%"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
-        CGFloat level = [defaults floatForKey:kSettingKeySmooth];
-        level = MAX(0.0, level - 0.1);
-        [defaults setFloat:level forKey:kSettingKeySmooth];
-        [defaults synchronize];
-        wvbLog(@"smooth -10%% -> %.1f", level);
-        [self showSettings];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"❌ 关闭"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-
-    // alert 在 iPad 上也是居中大弹窗，不需要 popover anchor
-    UIViewController *rootVC = self.floatWindow.rootViewController;
-    if (!rootVC) {
-        rootVC = [[UIViewController alloc] init];
-        self.floatWindow.rootViewController = rootVC;
+    if (self.settingsWindow) {
+        self.settingsWindow.hidden = NO;
+        return;
     }
-    [rootVC presentViewController:alert animated:YES completion:nil];
+
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+
+    // 全屏透明背景窗口
+    self.settingsWindow = [[UIWindow alloc] initWithFrame:screenBounds];
+    self.settingsWindow.windowLevel = UIWindowLevelStatusBar + 3000;
+    self.settingsWindow.backgroundColor = [UIColor clearColor];
+    self.settingsWindow.rootViewController = [[UIViewController alloc] init];
+
+    // 点击背景关闭
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(hideSettings)];
+    [self.settingsWindow.rootViewController.view addGestureRecognizer:tap];
+
+    // 设置面板
+    WVBSettingsVC *vc = [[WVBSettingsVC alloc] init];
+    vc.manager = self;
+    vc.view.frame = CGRectMake(0, 0, screenBounds.size.width, screenBounds.size.height);
+
+    [self.settingsWindow.rootViewController addChildViewController:vc];
+    [self.settingsWindow.rootViewController.view addSubview:vc.view];
+    [vc didMoveToParentViewController:self.settingsWindow.rootViewController];
+
+    [self.settingsWindow makeKeyAndVisible];
+    wvbLog(@"settingsWindow shown");
+}
+
+- (void)hideSettings {
+    wvbLog(@"hideSettings");
+    self.settingsWindow.hidden = YES;
 }
 
 - (void)toggleMirror {
@@ -407,6 +354,234 @@ static void wvbLog(NSString *format, ...) {
     [defaults setBool:!current forKey:kSettingKeyBeauty];
     [defaults synchronize];
     wvbLog(@"beauty: %@ -> %@", current ? @"ON" : @"OFF", !current ? @"ON" : @"OFF");
+}
+
+@end
+
+// ============ 设置面板（自定义模态，不依赖微信 VC 层级）=============
+
+@interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
+@property (nonatomic, weak) WVBManager *manager;
+@property (nonatomic, strong) UITableView *tableView;
+@end
+
+@implementation WVBSettingsVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    // 半透明背景
+    self.view.backgroundColor = [UIColor clearColor];
+
+    // 面板容器
+    CGFloat panelWidth = 320;
+    CGFloat panelHeight = 420;
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    if (screenBounds.size.width < panelWidth) {
+        panelWidth = screenBounds.size.width - 40;
+    }
+    if (panelHeight > screenBounds.size.height - 120) {
+        panelHeight = screenBounds.size.height - 120;
+    }
+    CGFloat panelX = (screenBounds.size.width - panelWidth) / 2;
+    CGFloat panelY = (screenBounds.size.height - panelHeight) / 2;
+
+    UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(panelX, panelY, panelWidth, panelHeight)];
+    panel.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.95];
+    panel.layer.cornerRadius = 16;
+    panel.layer.shadowColor = [UIColor blackColor].CGColor;
+    panel.layer.shadowOffset = CGSizeMake(0, 4);
+    panel.layer.shadowOpacity = 0.3;
+    panel.layer.shadowRadius = 12;
+    [self.view addSubview:panel];
+
+    // 标题
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 16, panelWidth, 30)];
+    title.text = @"✨ 微信视频美颜助手";
+    title.textAlignment = NSTextAlignmentCenter;
+    title.font = [UIFont boldSystemFontOfSize:18];
+    title.textColor = [UIColor colorWithRed:0.18 green:0.49 blue:0.96 alpha:1.0];
+    [panel addSubview:title];
+
+    // 表格
+    CGFloat tableY = 52;
+    CGFloat tableH = panelHeight - tableY - 16;
+    self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(12, tableY, panelWidth - 24, tableH)
+                                                  style:UITableViewStyleGrouped];
+    self.tableView.delegate = self;
+    self.tableView.dataSource = self;
+    self.tableView.layer.cornerRadius = 12;
+    self.tableView.backgroundColor = [UIColor clearColor];
+    self.tableView.separatorInset = UIEdgeInsetsZero;
+    self.tableView.estimatedRowHeight = 50;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    [panel addSubview:self.tableView];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 4;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0) return 2;  // 镜像 + 美颜开关
+    if (section == 1) return 2;  // 美白 +/-
+    if (section == 2) return 2;  // 磨皮 +/-
+    return 1;                    // 关闭按钮
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (section == 0) return @"功能开关";
+    if (section == 1) return @"美白强度";
+    if (section == 2) return @"磨皮强度";
+    return @"";
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    if (section == 3) return 8;  // 关闭按钮区域，小间距
+    return 32;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *kSwitchCell = @"SwitchCell";
+    static NSString *kSliderCell = @"SliderCell";
+    static NSString *kCloseCell = @"CloseCell";
+
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+    if (indexPath.section == 3 && indexPath.row == 0) {
+        // 关闭按钮
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kCloseCell];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kCloseCell];
+            cell.textLabel.text = @"❌ 关闭";
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            cell.textLabel.textColor = [UIColor redColor];
+            cell.textLabel.font = [UIFont boldSystemFontOfSize:16];
+        }
+        return cell;
+    }
+
+    if (indexPath.section == 0) {
+        // 开关行
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kSwitchCell];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kSwitchCell];
+            cell.accessoryView = [[UISwitch alloc] init];
+            ((UISwitch *)cell.accessoryView).onTintColor = [UIColor colorWithRed:0.18 green:0.49 blue:0.96 alpha:1.0];
+        }
+
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"📷 视频镜像";
+            BOOL on = [defaults boolForKey:@"wvb_mirror_enabled"];
+            ((UISwitch *)cell.accessoryView).on = on;
+            [((UISwitch *)cell.accessoryView) removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+            ((UISwitch *)cell.accessoryView).tag = 100;
+            [((UISwitch *)cell.accessoryView) addTarget:self action:@selector(toggleSwitch:) forControlEvents:UIControlEventValueChanged];
+        } else {
+            cell.textLabel.text = @"💄 视频美颜";
+            BOOL on = [defaults boolForKey:@"wvb_beauty_enabled"];
+            ((UISwitch *)cell.accessoryView).on = on;
+            [((UISwitch *)cell.accessoryView) removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+            ((UISwitch *)cell.accessoryView).tag = 101;
+            [((UISwitch *)cell.accessoryView) addTarget:self action:@selector(toggleSwitch:) forControlEvents:UIControlEventValueChanged];
+        }
+        cell.textLabel.font = [UIFont systemFontOfSize:15];
+        return cell;
+    }
+
+    // 强度行（标题 + [-] [+] 按钮）
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kSliderCell];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kSliderCell];
+        cell.textLabel.font = [UIFont systemFontOfSize:15];
+
+        UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectMake(0, 0, 100, 28)];
+        stack.axis = UILayoutConstraintAxisHorizontal;
+        stack.spacing = 8;
+        stack.alignment = UIStackViewAlignmentCenter;
+        stack.distribution = UIStackViewDistributionFillEqually;
+        stack.tag = 999;
+
+        UIButton *plus = [UIButton buttonWithType:UIButtonTypeSystem];
+        [plus setTitle:@"+10%" forState:UIControlStateNormal];
+        plus.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+        plus.tag = 1;
+
+        UIButton *minus = [UIButton buttonWithType:UIButtonTypeSystem];
+        [minus setTitle:@"-10%" forState:UIControlStateNormal];
+        minus.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+        minus.tag = 0;
+
+        [stack addArrangedSubview:minus];
+        [stack addArrangedSubview:plus];
+        cell.accessoryView = stack;
+    }
+
+    // 清理旧 target（避免 reuse 时重复触发）
+    UIStackView *stack = (UIStackView *)cell.accessoryView;
+    for (UIView *v in stack.arrangedSubviews) {
+        if ([v isKindOfClass:[UIButton class]]) {
+            [(UIButton *)v removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
+        }
+    }
+
+    NSString *key = (indexPath.section == 1) ? @"wvb_whiten_level" : @"wvb_smooth_level";
+    CGFloat level = [defaults floatForKey:key];
+    NSString *prefix = (indexPath.section == 1) ? @"美白" : @"磨皮";
+
+    cell.textLabel.text = [NSString stringWithFormat:@"%@强度：%.0f%%", prefix, level * 100];
+
+    UIButton *plusBtn = (UIButton *)[stack viewWithTag:1];
+    UIButton *minusBtn = (UIButton *)[stack viewWithTag:0];
+    plusBtn.tag = indexPath.section;
+    minusBtn.tag = indexPath.section;
+    [plusBtn addTarget:self action:@selector(increaseLevel:) forControlEvents:UIControlEventTouchUpInside];
+    [minusBtn addTarget:self action:@selector(decreaseLevel:) forControlEvents:UIControlEventTouchUpInside];
+
+    return cell;
+}
+
+- (void)toggleSwitch:(UISwitch *)sw {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (sw.tag == 100) {
+        [defaults setBool:sw.isOn forKey:@"wvb_mirror_enabled"];
+        wvbLog(@"mirror: %@", sw.isOn ? @"ON" : @"OFF");
+    } else {
+        [defaults setBool:sw.isOn forKey:@"wvb_beauty_enabled"];
+        wvbLog(@"beauty: %@", sw.isOn ? @"ON" : @"OFF");
+    }
+    [defaults synchronize];
+}
+
+- (void)increaseLevel:(UIButton *)btn {
+    NSInteger section = btn.tag;
+    NSString *key = (section == 1) ? @"wvb_whiten_level" : @"wvb_smooth_level";
+    CGFloat level = [[NSUserDefaults standardUserDefaults] floatForKey:key];
+    level = MIN(1.0, level + 0.1);
+    [[NSUserDefaults standardUserDefaults] setFloat:level forKey:key];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    wvbLog(@"%@ +10%% -> %.1f", (section == 1) ? @"whiten" : @"smooth", level);
+    [self.tableView reloadData];
+}
+
+- (void)decreaseLevel:(UIButton *)btn {
+    NSInteger section = btn.tag;
+    NSString *key = (section == 1) ? @"wvb_whiten_level" : @"wvb_smooth_level";
+    CGFloat level = [[NSUserDefaults standardUserDefaults] floatForKey:key];
+    level = MAX(0.0, level - 0.1);
+    [[NSUserDefaults standardUserDefaults] setFloat:level forKey:key];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    wvbLog(@"%@ -10%% -> %.1f", (section == 1) ? @"whiten" : @"smooth", level);
+    [self.tableView reloadData];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    // 关闭按钮
+    if (indexPath.section == 3) {
+        [self.manager hideSettings];
+    }
 }
 
 @end

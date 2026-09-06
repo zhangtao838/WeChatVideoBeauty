@@ -222,6 +222,8 @@ static void wvbLog(NSString *format, ...) {
 }
 
 - (void)setupFloatButton {
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+
     if (self.floatWindow) {
         wvbLog(@"floatWindow already exists, hidden=%@ -> show it",
                self.floatWindow.hidden ? @"YES" : @"NO");

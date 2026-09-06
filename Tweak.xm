@@ -44,6 +44,7 @@ static void wvbLog(NSString *format, ...) {
 @interface WVBVideoFrameHandler : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, weak) id<AVCaptureVideoDataOutputSampleBufferDelegate> originalDelegate;
 @property (nonatomic, strong) CIContext *ciContext;
+@property (nonatomic, assign) dispatch_queue_t originalQueue;
 + (instancetype)sharedHandler;
 - (CVPixelBufferRef)processPixelBuffer:(CVPixelBufferRef)pixelBuffer;
 @end
@@ -62,7 +63,8 @@ static void wvbLog(NSString *format, ...) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        self.ciContext = [CIContext contextWithOptions:nil];
+        // CPU-based CIContext：线程安全，不依赖 GPU/EAGLContext
+        self.ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
         wvbLog(@"WVBVideoFrameHandler init, ciContext=%@", self.ciContext);
     }
     return self;
@@ -147,47 +149,54 @@ static void wvbLog(NSString *format, ...) {
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    // 安全检查
-    if (!sampleBuffer || !self.originalDelegate) {
-        return;
-    }
-
-    // 如果美颜没开，直接透传原始帧
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if (![defaults boolForKey:kSettingKeyBeauty]) {
-        if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-            [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
-        }
-        return;
-    }
-
-    // 美颜开启时才处理
     @autoreleasepool {
+        // 安全检查
+        if (!sampleBuffer || !self.originalDelegate) {
+            return;
+        }
+
+        // 保存原始 delegate 和 queue（避免 block 内 self 被篡改）
+        id<AVCaptureVideoDataOutputSampleBufferDelegate> delegate = self.originalDelegate;
+        dispatch_queue_t targetQueue = self.originalQueue;
+
+        // 如果美颜没开，直接透传原始帧
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        if (![defaults boolForKey:kSettingKeyBeauty]) {
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            }
+            return;
+        }
+
         CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!pixelBuffer) {
-            // 无法获取 buffer，透传原始帧
-            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
             return;
         }
 
-        CVPixelBufferRef processedBuffer = [self processPixelBuffer:pixelBuffer];
+        CVPixelBufferRef processedBuffer = NULL;
+        @try {
+            processedBuffer = [self processPixelBuffer:pixelBuffer];
+        } @catch (NSException *e) {
+            wvbLog(@"processPixelBuffer exception: %@", e);
+        }
+
         if (!processedBuffer) {
-            // 处理失败，透传原始帧
-            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
             return;
         }
 
-        // 创建新的 sample buffer
+        // 创建新的 sample buffer，保留原始 timing
         CMVideoFormatDescriptionRef formatDesc = NULL;
         OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, processedBuffer, &formatDesc);
         if (status != noErr || !formatDesc) {
             CVPixelBufferRelease(processedBuffer);
-            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
             return;
         }
@@ -195,6 +204,15 @@ static void wvbLog(NSString *format, ...) {
         CMSampleBufferRef newSampleBuffer = NULL;
         CMSampleTimingInfo timingInfo;
         memset(&timingInfo, 0, sizeof(timingInfo));
+
+        // 从原始 sample buffer 复制 timing，避免时间戳为零导致 WeChat 崩溃
+        CMSampleTimingInfoArrayRef timingArray = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer);
+        if (timingArray && CMSampleTimingInfoArrayGetCount(timingArray) > 0) {
+            const CMSampleTimingInfo *srcTiming = CMSampleTimingInfoArrayGetTimingInfoAtIndex(timingArray, 0);
+            if (srcTiming) {
+                timingInfo = *srcTiming;
+            }
+        }
 
         status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault,
                                                      processedBuffer,
@@ -209,27 +227,35 @@ static void wvbLog(NSString *format, ...) {
         CVPixelBufferRelease(processedBuffer);
 
         if (status != noErr || !newSampleBuffer) {
-            if ([self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
             }
             return;
         }
 
-        // 传给原始 delegate（在主线程）
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.originalDelegate && [self.originalDelegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [self.originalDelegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
+        // 在原始采集队列上同步调用 delegate，保持 WeChat 的线程模型不变
+        if (targetQueue) {
+            dispatch_sync(targetQueue, ^{
+                if (delegate && [delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                    [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
+                }
+                CFRelease(newSampleBuffer);
+            });
+        } else {
+            // 兜底：直接同步调用
+            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
             }
             CFRelease(newSampleBuffer);
-        });
+        }
     }
 }
 
 @end
 
-// ============ 设置面板（需在 WVBManager 前声明）=============
+// ============ 设置面板（完整 interface，必须在 WVBManager 前面，避免前向声明不够用）=============
 
-@class WVBManager;
+@interface WVBManager;  // 仅用于 property 声明中的弱引用
 
 @interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, weak) WVBManager *manager;
@@ -701,7 +727,8 @@ static void wvbLog(NSString *format, ...) {
     if (delegate && [delegate conformsToProtocol:@protocol(AVCaptureVideoDataOutputSampleBufferDelegate)]) {
         WVBVideoFrameHandler *handler = [WVBVideoFrameHandler sharedHandler];
         handler.originalDelegate = delegate;
-        wvbLog(@"✅ hooked delegate");
+        handler.originalQueue = queue;
+        wvbLog(@"✅ hooked delegate, queue=%p", queue);
         %orig(handler, queue);
     } else {
         wvbLog(@"⚠️  delegate nil or not conforming, pass through");

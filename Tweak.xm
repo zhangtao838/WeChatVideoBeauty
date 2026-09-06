@@ -190,9 +190,14 @@ static void wvbLog(NSString *format, ...) {
 
 @end
 
-// ============ 悬浮按钮管理器 ============
+// ============ 设置面板（需在 WVBManager 前声明）=============
 
-@class WVBSettingsVC;
+@interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
+@property (nonatomic, weak) WVBManager *manager;
+@property (nonatomic, strong) UITableView *tableView;
+@end
+
+// ============ 悬浮按钮管理器 ============
 
 @interface WVBManager : NSObject
 @property (nonatomic, strong) UIWindow *floatWindow;
@@ -360,12 +365,7 @@ static void wvbLog(NSString *format, ...) {
 
 @end
 
-// ============ 设置面板（自定义模态，不依赖微信 VC 层级）=============
-
-@interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
-@property (nonatomic, weak) WVBManager *manager;
-@property (nonatomic, strong) UITableView *tableView;
-@end
+// ============ 设置面板实现（interface 已移到 WVBManager 前面）=============
 
 @implementation WVBSettingsVC
 

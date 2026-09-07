@@ -88,59 +88,62 @@ static void wvbLog(NSString *format, ...) {
         return NULL;
     }
 
+    // 整个方法体包在 @try 里，CI 相关操作在后台线程抛异常会导致进程崩溃
     @autoreleasepool {
-        CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-        if (!image) {
-            return NULL;
-        }
-
-        // 美白
-        if (whitenLevel > 0.01) {
-            CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
-            if (colorControls) {
-                [colorControls setValue:image forKey:kCIInputImageKey];
-                [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
-                [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
-                [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
-                image = [colorControls valueForKey:kCIOutputImageKey];
-                if (!image) {
-                    return NULL;
-                }
-            }
-        }
-
-        // 磨皮
-        if (smoothLevel > 0.01) {
-            CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
-            if (noiseReduction) {
-                [noiseReduction setValue:image forKey:kCIInputImageKey];
-                [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
-                [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
-                image = [noiseReduction valueForKey:kCIOutputImageKey];
-                if (!image) {
-                    return NULL;
-                }
-            }
-        }
-
-        size_t width = CVPixelBufferGetWidth(pixelBuffer);
-        size_t height = CVPixelBufferGetHeight(pixelBuffer);
-        OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-
-        if (width == 0 || height == 0) {
-            return NULL;
-        }
-
         CVPixelBufferRef outputBuffer = NULL;
-        CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
-        if (ret != kCVReturnSuccess || !outputBuffer) {
-            return NULL;
-        }
-
         @try {
+            CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+            if (!image) {
+                return NULL;
+            }
+
+            // 美白
+            if (whitenLevel > 0.01) {
+                CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
+                if (colorControls) {
+                    [colorControls setValue:image forKey:kCIInputImageKey];
+                    [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
+                    [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
+                    [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
+                    image = [colorControls valueForKey:kCIOutputImageKey];
+                    if (!image) {
+                        return NULL;
+                    }
+                }
+            }
+
+            // 磨皮
+            if (smoothLevel > 0.01) {
+                CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
+                if (noiseReduction) {
+                    [noiseReduction setValue:image forKey:kCIInputImageKey];
+                    [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
+                    [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
+                    image = [noiseReduction valueForKey:kCIOutputImageKey];
+                    if (!image) {
+                        return NULL;
+                    }
+                }
+            }
+
+            size_t width = CVPixelBufferGetWidth(pixelBuffer);
+            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+            OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+
+            if (width == 0 || height == 0) {
+                return NULL;
+            }
+
+            CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
+            if (ret != kCVReturnSuccess || !outputBuffer) {
+                return NULL;
+            }
+
             [self.ciContext render:image toCVPixelBuffer:outputBuffer];
+
         } @catch (NSException *e) {
-            CVPixelBufferRelease(outputBuffer);
+            wvbLog(@"processPixelBuffer exception: %@", e.reason);
+            if (outputBuffer) CVPixelBufferRelease(outputBuffer);
             return NULL;
         }
 
@@ -176,12 +179,7 @@ static void wvbLog(NSString *format, ...) {
             return;
         }
 
-        CVPixelBufferRef processedBuffer = NULL;
-        @try {
-            processedBuffer = [self processPixelBuffer:pixelBuffer];
-        } @catch (NSException *e) {
-            wvbLog(@"processPixelBuffer exception: %@", e);
-        }
+        CVPixelBufferRef processedBuffer = [self processPixelBuffer:pixelBuffer];
 
         if (!processedBuffer) {
             if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
@@ -233,21 +231,11 @@ static void wvbLog(NSString *format, ...) {
             return;
         }
 
-        // 在原始采集队列上同步调用 delegate，保持 WeChat 的线程模型不变
-        if (targetQueue) {
-            dispatch_sync(targetQueue, ^{
-                if (delegate && [delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                    [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
-                }
-                CFRelease(newSampleBuffer);
-            });
-        } else {
-            // 兜底：直接同步调用
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
-            }
-            CFRelease(newSampleBuffer);
+        // 直接同步调用 delegate（captureOutput 本身就在采集队列上执行，无需 dispatch）
+        if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+            [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
         }
+        CFRelease(newSampleBuffer);
     }
 }
 
@@ -688,19 +676,15 @@ static void wvbLog(NSString *format, ...) {
 
     if (mirrorEnabled) {
         BOOL isFrontCamera = NO;
-        @try {
-            AVCaptureInputPort *port = [self inputPorts].firstObject;
-            if (port) {
-                AVCaptureInput *input = port.input;
-                if ([input isKindOfClass:[AVCaptureDeviceInput class]]) {
-                    AVCaptureDevice *device = [(AVCaptureDeviceInput *)input device];
-                    if (device && device.position == AVCaptureDevicePositionFront) {
-                        isFrontCamera = YES;
-                    }
+        AVCaptureInputPort *port = [self inputPorts].firstObject;
+        if (port) {
+            AVCaptureInput *input = port.input;
+            if ([input isKindOfClass:[AVCaptureDeviceInput class]]) {
+                AVCaptureDevice *device = [(AVCaptureDeviceInput *)input device];
+                if (device && device.position == AVCaptureDevicePositionFront) {
+                    isFrontCamera = YES;
                 }
             }
-        } @catch (NSException *e) {
-            wvbLog(@"EXCEPTION checking front camera: %@", e);
         }
 
         if (isFrontCamera) {

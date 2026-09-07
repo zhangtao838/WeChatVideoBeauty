@@ -88,64 +88,56 @@ static void wvbLog(NSString *format, ...) {
         return NULL;
     }
 
-    // 整个方法体包在 @try 里，CI 相关操作在后台线程抛异常会导致进程崩溃
     @autoreleasepool {
-        CVPixelBufferRef outputBuffer = NULL;
-        @try {
-            CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-            if (!image) {
-                return NULL;
-            }
-
-            // 美白
-            if (whitenLevel > 0.01) {
-                CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
-                if (colorControls) {
-                    [colorControls setValue:image forKey:kCIInputImageKey];
-                    [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
-                    [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
-                    [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
-                    image = [colorControls valueForKey:kCIOutputImageKey];
-                    if (!image) {
-                        return NULL;
-                    }
-                }
-            }
-
-            // 磨皮
-            if (smoothLevel > 0.01) {
-                CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
-                if (noiseReduction) {
-                    [noiseReduction setValue:image forKey:kCIInputImageKey];
-                    [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
-                    [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
-                    image = [noiseReduction valueForKey:kCIOutputImageKey];
-                    if (!image) {
-                        return NULL;
-                    }
-                }
-            }
-
-            size_t width = CVPixelBufferGetWidth(pixelBuffer);
-            size_t height = CVPixelBufferGetHeight(pixelBuffer);
-            OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-
-            if (width == 0 || height == 0) {
-                return NULL;
-            }
-
-            CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
-            if (ret != kCVReturnSuccess || !outputBuffer) {
-                return NULL;
-            }
-
-            [self.ciContext render:image toCVPixelBuffer:outputBuffer];
-
-        } @catch (NSException *e) {
-            wvbLog(@"processPixelBuffer exception: %@", e.reason);
-            if (outputBuffer) CVPixelBufferRelease(outputBuffer);
+        CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+        if (!image) {
             return NULL;
         }
+
+        // 美白
+        if (whitenLevel > 0.01) {
+            CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
+            if (colorControls) {
+                [colorControls setValue:image forKey:kCIInputImageKey];
+                [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
+                [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
+                [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
+                image = [colorControls valueForKey:kCIOutputImageKey];
+                if (!image) {
+                    return NULL;
+                }
+            }
+        }
+
+        // 磨皮
+        if (smoothLevel > 0.01) {
+            CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
+            if (noiseReduction) {
+                [noiseReduction setValue:image forKey:kCIInputImageKey];
+                [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
+                [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
+                image = [noiseReduction valueForKey:kCIOutputImageKey];
+                if (!image) {
+                    return NULL;
+                }
+            }
+        }
+
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+
+        if (width == 0 || height == 0) {
+            return NULL;
+        }
+
+        CVPixelBufferRef outputBuffer = NULL;
+        CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
+        if (ret != kCVReturnSuccess || !outputBuffer) {
+            return NULL;
+        }
+
+        [self.ciContext render:image toCVPixelBuffer:outputBuffer];
 
         return outputBuffer;
     }

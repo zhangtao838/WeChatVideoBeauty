@@ -120,7 +120,17 @@ static void wvbLog(NSString *format, ...) {
         // 的边缘拉回来，避免整张脸糊掉。CINoiseReduction 几乎看不出效果，已弃用。
         if (smoothLevel > 0.01) {
             CGFloat sigma = 2.0 + 2.0 * smoothLevel;          // 默认 0.5 → sigma 3，拉满 → 4
-            CIImage *blurred = [image imageByApplyingGaussianBlur:sigma];
+            // 用 CIGaussianBlur 滤镜而不是 imageByApplyingGaussianBlur:（后者在部分 iOS SDK 头文件里不可见，编译报错）
+            CIFilter *blurFilter = [CIFilter filterWithName:@"CIGaussianBlur"];
+            CIImage *blurred = nil;
+            if (blurFilter) {
+                [blurFilter setValue:image forKey:kCIInputImageKey];
+                [blurFilter setValue:@(sigma) forKey:kCIInputRadiusKey];
+                blurred = [blurFilter valueForKey:kCIOutputImageKey];
+            }
+            if (!blurred) {
+                return NO;
+            }
 
             CIFilter *dissolve = [CIFilter filterWithName:@"CIDissolveTransition"];
             if (dissolve) {

@@ -9,7 +9,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = WeChatVideoBeauty
 
 WeChatVideoBeauty_FILES = Tweak.xm
-WeChatVideoBeauty_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable
+WeChatVideoBeauty_CFLAGS = -fobjc-arc -fobjc-arc-exceptions -Wno-deprecated-declarations -Wno-unused-variable
 WeChatVideoBeauty_FRAMEWORKS = UIKit AVFoundation CoreImage CoreMedia QuartzCore
 WeChatVideoBeauty_CODESIGN_FLAGS = -SEntitlements.plist
 

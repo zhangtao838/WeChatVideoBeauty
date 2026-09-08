@@ -44,9 +44,10 @@ static void wvbLog(NSString *format, ...) {
 @interface WVBVideoFrameHandler : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic, weak) id<AVCaptureVideoDataOutputSampleBufferDelegate> originalDelegate;
 @property (nonatomic, strong) CIContext *ciContext;
-@property (nonatomic, assign) dispatch_queue_t originalQueue;
+@property (nonatomic, strong) dispatch_queue_t originalQueue; // dispatch_queue 在 ARC 下是 ObjC 对象，必须 strong 而非 assign
+@property (nonatomic, assign) NSInteger debugFrameCount; // 诊断用：每 60 帧打一条耗时日志
 + (instancetype)sharedHandler;
-- (CVPixelBufferRef)processPixelBuffer:(CVPixelBufferRef)pixelBuffer;
+- (BOOL)applyBeautyToPixelBuffer:(CVPixelBufferRef)pixelBuffer;
 @end
 
 @implementation WVBVideoFrameHandler
@@ -63,35 +64,40 @@ static void wvbLog(NSString *format, ...) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // CPU-based CIContext：线程安全，不依赖 GPU/EAGLContext
-        self.ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        // Metal-backed CIContext（默认实现线程安全，可跨队列使用）：
+        // 之前的软渲染器(kCIContextUseSoftwareRenderer)在视频帧率下极慢，会把采集队列拖垮
+        self.ciContext = [CIContext context];
         wvbLog(@"WVBVideoFrameHandler init, ciContext=%@", self.ciContext);
     }
     return self;
 }
 
-- (CVPixelBufferRef)processPixelBuffer:(CVPixelBufferRef)pixelBuffer {
+// 在"原始" pixel buffer 里原地渲染美颜效果。
+// 设计要点：绝不新建 CVPixelBuffer / CMSampleBuffer / CMFormatDescription，
+// 微信拿到的是它自己产出的 sample buffer，只是内容被改了——
+// timing、attachment、格式描述、IOSurface 全部保持原样，从根上排除"外来替换帧被微信管线拒绝"的闪退。
+- (BOOL)applyBeautyToPixelBuffer:(CVPixelBufferRef)pixelBuffer {
     if (!pixelBuffer) {
-        return NULL;
+        return NO;
     }
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL beautyEnabled = [defaults boolForKey:kSettingKeyBeauty];
     if (!beautyEnabled) {
-        return NULL;
+        return NO;
     }
 
     CGFloat whitenLevel = [defaults floatForKey:kSettingKeyWhiten];
     CGFloat smoothLevel = [defaults floatForKey:kSettingKeySmooth];
 
     if (whitenLevel < 0.01 && smoothLevel < 0.01) {
-        return NULL;
+        return NO;
     }
 
     @autoreleasepool {
         CIImage *image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
         if (!image) {
-            return NULL;
+            return NO;
         }
 
         // 美白
@@ -104,7 +110,7 @@ static void wvbLog(NSString *format, ...) {
                 [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
                 image = [colorControls valueForKey:kCIOutputImageKey];
                 if (!image) {
-                    return NULL;
+                    return NO;
                 }
             }
         }
@@ -118,28 +124,14 @@ static void wvbLog(NSString *format, ...) {
                 [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
                 image = [noiseReduction valueForKey:kCIOutputImageKey];
                 if (!image) {
-                    return NULL;
+                    return NO;
                 }
             }
         }
 
-        size_t width = CVPixelBufferGetWidth(pixelBuffer);
-        size_t height = CVPixelBufferGetHeight(pixelBuffer);
-        OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+        [self.ciContext render:image toCVPixelBuffer:pixelBuffer];
 
-        if (width == 0 || height == 0) {
-            return NULL;
-        }
-
-        CVPixelBufferRef outputBuffer = NULL;
-        CVReturn ret = CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixelFormat, NULL, &outputBuffer);
-        if (ret != kCVReturnSuccess || !outputBuffer) {
-            return NULL;
-        }
-
-        [self.ciContext render:image toCVPixelBuffer:outputBuffer];
-
-        return outputBuffer;
+        return YES;
     }
 }
 
@@ -150,82 +142,44 @@ static void wvbLog(NSString *format, ...) {
             return;
         }
 
-        // 保存原始 delegate 和 queue（避免 block 内 self 被篡改）
+        // 保存原始 delegate（避免回调过程中 self 被篡改）
         id<AVCaptureVideoDataOutputSampleBufferDelegate> delegate = self.originalDelegate;
-        dispatch_queue_t targetQueue = self.originalQueue;
+        if (![delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+            return;
+        }
 
-        // 如果美颜没开，直接透传原始帧
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        if (![defaults boolForKey:kSettingKeyBeauty]) {
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+
+        // 美颜开着时：在原始 pixel buffer 上原地处理（成功与否都传回原始 sample buffer）
+        if ([defaults boolForKey:kSettingKeyBeauty]) {
+            CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+            BOOL processed = NO;
+            OSType fmt = 0;
+            @try {
+                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                if (pixelBuffer) {
+                    fmt = CVPixelBufferGetPixelFormatType(pixelBuffer);
+                    processed = [self applyBeautyToPixelBuffer:pixelBuffer];
+                }
+            } @catch (...) {
+                // .mm 里 @catch(...) 能接住 ObjC 和 C++ 两类异常；处理失败就退回原始帧，绝不让微信崩
+                wvbLog(@"❌ beauty processing exception, falling back to raw frame");
+                processed = NO;
             }
-            return;
-        }
 
-        CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (!pixelBuffer) {
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
+            self.debugFrameCount++;
+            if (self.debugFrameCount == 1 || self.debugFrameCount % 60 == 0) {
+                wvbLog(@"beauty frame #%ld %@ cost=%.1fms fmt=%c%c%c%c",
+                       (long)self.debugFrameCount,
+                       processed ? @"processed" : @"passthrough",
+                       (CFAbsoluteTimeGetCurrent() - t0) * 1000.0,
+                       (char)(fmt >> 24) & 0xff, (char)(fmt >> 16) & 0xff,
+                       (char)(fmt >> 8) & 0xff, (char)fmt & 0xff);
             }
-            return;
         }
 
-        CVPixelBufferRef processedBuffer = [self processPixelBuffer:pixelBuffer];
-
-        if (!processedBuffer) {
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
-            }
-            return;
-        }
-
-        // 创建新的 sample buffer，保留原始 timing
-        CMVideoFormatDescriptionRef formatDesc = NULL;
-        OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, processedBuffer, &formatDesc);
-        if (status != noErr || !formatDesc) {
-            CVPixelBufferRelease(processedBuffer);
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
-            }
-            return;
-        }
-
-        CMSampleBufferRef newSampleBuffer = NULL;
-        CMSampleTimingInfo timingInfo;
-        memset(&timingInfo, 0, sizeof(timingInfo));
-
-        // 从原始 sample buffer 复制 timing，避免时间戳为零导致 WeChat 崩溃
-        // （注意：CoreMedia 没有 CMSampleTimingInfoArray* 这套 API，正确用法是 CMSampleBufferGetSampleTimingInfo）
-        CMSampleTimingInfo srcTiming;
-        if (CMSampleBufferGetSampleTimingInfo(sampleBuffer, 0, &srcTiming) == noErr) {
-            timingInfo = srcTiming;
-        }
-
-        status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault,
-                                                     processedBuffer,
-                                                     true,
-                                                     NULL,
-                                                     NULL,
-                                                     formatDesc,
-                                                     &timingInfo,
-                                                     &newSampleBuffer);
-
-        CFRelease(formatDesc);
-        CVPixelBufferRelease(processedBuffer);
-
-        if (status != noErr || !newSampleBuffer) {
-            if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-                [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
-            }
-            return;
-        }
-
-        // 直接同步调用 delegate（captureOutput 本身就在采集队列上执行，无需 dispatch）
-        if ([delegate respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-            [delegate captureOutput:output didOutputSampleBuffer:newSampleBuffer fromConnection:connection];
-        }
-        CFRelease(newSampleBuffer);
+        // 始终传回原始 sample buffer（美颜是原地改内容，不需要替换 buffer）
+        [delegate captureOutput:output didOutputSampleBuffer:sampleBuffer fromConnection:connection];
     }
 }
 

@@ -100,14 +100,15 @@ static void wvbLog(NSString *format, ...) {
             return NO;
         }
 
-        // 美白
+        // 美白：亮度/饱和度/对比度。幅度按 whitenLevel 走，默认 0.5 就能看出提亮+气色，
+        // 拉满(1.0)也不会过曝。
         if (whitenLevel > 0.01) {
             CIFilter *colorControls = [CIFilter filterWithName:@"CIColorControls"];
             if (colorControls) {
                 [colorControls setValue:image forKey:kCIInputImageKey];
-                [colorControls setValue:@(0.05 * whitenLevel) forKey:kCIInputBrightnessKey];
-                [colorControls setValue:@(1.0 + 0.08 * whitenLevel) forKey:kCIInputSaturationKey];
-                [colorControls setValue:@(1.0 + 0.03 * whitenLevel) forKey:kCIInputContrastKey];
+                [colorControls setValue:@(0.12 * whitenLevel) forKey:kCIInputBrightnessKey];
+                [colorControls setValue:@(1.0 + 0.12 * whitenLevel) forKey:kCIInputSaturationKey];
+                [colorControls setValue:@(1.0 + 0.06 * whitenLevel) forKey:kCIInputContrastKey];
                 image = [colorControls valueForKey:kCIOutputImageKey];
                 if (!image) {
                     return NO;
@@ -115,14 +116,28 @@ static void wvbLog(NSString *format, ...) {
             }
         }
 
-        // 磨皮
+        // 磨皮：高斯模糊 + 与原图交叉混合（mix 越大越接近模糊图），再用锐化把眼、眉、轮廓
+        // 的边缘拉回来，避免整张脸糊掉。CINoiseReduction 几乎看不出效果，已弃用。
         if (smoothLevel > 0.01) {
-            CIFilter *noiseReduction = [CIFilter filterWithName:@"CINoiseReduction"];
-            if (noiseReduction) {
-                [noiseReduction setValue:image forKey:kCIInputImageKey];
-                [noiseReduction setValue:@(0.02 * smoothLevel) forKey:@"inputNoiseLevel"];
-                [noiseReduction setValue:@(0.3 * smoothLevel) forKey:@"inputSharpness"];
-                image = [noiseReduction valueForKey:kCIOutputImageKey];
+            CGFloat sigma = 2.0 + 2.0 * smoothLevel;          // 默认 0.5 → sigma 3，拉满 → 4
+            CIImage *blurred = [image imageByApplyingGaussianBlur:sigma];
+
+            CIFilter *dissolve = [CIFilter filterWithName:@"CIDissolveTransition"];
+            if (dissolve) {
+                [dissolve setValue:blurred forKey:kCIInputImageKey];
+                [dissolve setValue:image forKey:kCIInputTargetImageKey];
+                [dissolve setValue:@(smoothLevel * 0.9) forKey:kCIInputTimeKey]; // 最多混 90%，留 10% 原图细节
+                image = [dissolve valueForKey:kCIOutputImageKey];
+                if (!image) {
+                    return NO;
+                }
+            }
+
+            CIFilter *sharpen = [CIFilter filterWithName:@"CISharpenLuminance"];
+            if (sharpen) {
+                [sharpen setValue:image forKey:kCIInputImageKey];
+                [sharpen setValue:@(0.3 + 0.3 * smoothLevel) forKey:@"inputSharpness"];
+                image = [sharpen valueForKey:kCIOutputImageKey];
                 if (!image) {
                     return NO;
                 }

@@ -196,12 +196,10 @@ static void wvbLog(NSString *format, ...) {
         memset(&timingInfo, 0, sizeof(timingInfo));
 
         // 从原始 sample buffer 复制 timing，避免时间戳为零导致 WeChat 崩溃
-        CMSampleTimingInfoArrayRef timingArray = CMSampleBufferGetSampleTimingInfoArray(sampleBuffer);
-        if (timingArray && CMSampleTimingInfoArrayGetCount(timingArray) > 0) {
-            const CMSampleTimingInfo *srcTiming = CMSampleTimingInfoArrayGetTimingInfoAtIndex(timingArray, 0);
-            if (srcTiming) {
-                timingInfo = *srcTiming;
-            }
+        // （注意：CoreMedia 没有 CMSampleTimingInfoArray* 这套 API，正确用法是 CMSampleBufferGetSampleTimingInfo）
+        CMSampleTimingInfo srcTiming;
+        if (CMSampleBufferGetSampleTimingInfo(sampleBuffer, 0, &srcTiming) == noErr) {
+            timingInfo = srcTiming;
         }
 
         status = CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault,
@@ -235,7 +233,7 @@ static void wvbLog(NSString *format, ...) {
 
 // ============ 设置面板（完整 interface，必须在 WVBManager 前面，避免前向声明不够用）=============
 
-@interface WVBManager;  // 仅用于 property 声明中的弱引用
+@class WVBManager;  // 前向声明：WVBSettingsVC 的 property 里弱引用它，@class 就够用（@interface 会破坏 Logos 的块深度计数）
 
 @interface WVBSettingsVC : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, weak) WVBManager *manager;
@@ -599,10 +597,11 @@ static void wvbLog(NSString *format, ...) {
 
     cell.textLabel.text = [NSString stringWithFormat:@"%@强度：%.0f%%", prefix, level * 100];
 
+    // 按钮 tag 保持创建时的固定值（minus=0 / plus=1），所属 section 记在 cell.tag 上；
+    // 之前把按钮 tag 覆盖成 section，cell 复用后 viewWithTag: 会找错按钮甚至返回 nil
+    cell.tag = indexPath.section;
     UIButton *plusBtn = (UIButton *)[stack viewWithTag:1];
     UIButton *minusBtn = (UIButton *)[stack viewWithTag:0];
-    plusBtn.tag = indexPath.section;
-    minusBtn.tag = indexPath.section;
     [plusBtn addTarget:self action:@selector(increaseLevel:) forControlEvents:UIControlEventTouchUpInside];
     [minusBtn addTarget:self action:@selector(decreaseLevel:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -621,8 +620,17 @@ static void wvbLog(NSString *format, ...) {
     [defaults synchronize];
 }
 
+// 从按钮向上遍历视图层级找到所在 cell，读取 cell.tag 里存的 section（比写死 superview 层数稳）
+- (NSInteger)wvbSectionForButton:(UIButton *)btn {
+    UIView *v = btn;
+    while (v && ![v isKindOfClass:[UITableViewCell class]]) {
+        v = v.superview;
+    }
+    return v ? (NSInteger)((UITableViewCell *)v).tag : 0;
+}
+
 - (void)increaseLevel:(UIButton *)btn {
-    NSInteger section = btn.tag;
+    NSInteger section = [self wvbSectionForButton:btn];
     NSString *key = (section == 1) ? @"wvb_whiten_level" : @"wvb_smooth_level";
     CGFloat level = [[NSUserDefaults standardUserDefaults] floatForKey:key];
     level = MIN(1.0, level + 0.1);
@@ -633,7 +641,7 @@ static void wvbLog(NSString *format, ...) {
 }
 
 - (void)decreaseLevel:(UIButton *)btn {
-    NSInteger section = btn.tag;
+    NSInteger section = [self wvbSectionForButton:btn];
     NSString *key = (section == 1) ? @"wvb_whiten_level" : @"wvb_smooth_level";
     CGFloat level = [[NSUserDefaults standardUserDefaults] floatForKey:key];
     level = MAX(0.0, level - 0.1);
